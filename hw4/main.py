@@ -23,9 +23,39 @@ def sample(env,
         Each path can have elements for observations, next_observations, rewards, returns, actions, etc.
     """
     paths = []
+
     """ YOUR CODE HERE """
 
-    return paths
+    for i in range(num_paths):
+        if verbose: print('rollout', i)
+        obs = env.reset()
+        done = False
+        # path tuple (S_t, S_t', r, R, A)
+        path = {'observations' : [], 'next_observations' : [], 'rewards' : [], 'returns' : [], 'actions' : []}
+        steps = 0
+        while not done:
+            action = controller.get_action(obs) # A_t
+            path['observations'].append(obs)
+            path['actions'].append(action)
+            obs, r, done, _ = env.step(action)
+            path['next_observations'].append(obs)
+            path['rewards'].append(r)
+            path['returns'] = [elem + r for elem in path['returns']]
+            path['returns'].append(r)
+            steps += 1
+
+            if render:
+                env.render()
+            if steps%100 == 0:
+                if verbose: print("%i/%i"%(steps, horizon))
+            if steps >= horizon:
+                break
+
+        for key in path: # convert to ndarray
+            path[key] = np.asarray(path[key])
+        paths.append(path)
+
+    return paths # [{path1}, {path2}, ...]
 
 # Utility to compute cost a path for a given cost function
 def path_cost(cost_fn, path):
@@ -38,17 +68,56 @@ def compute_normalization(data):
     """
 
     """ YOUR CODE HERE """
-    return mean_obs, std_obs, mean_deltas, std_deltas, mean_action, std_action
+    """
+    mean_obs = np.mean(data['observations'], axis=0)
+    std_obs = np.std(data['observations'], axis=0)
+    mean_deltas = np.mean(data['next_observations'] - data['observations'], axis=0)
+    std_deltas = np.std(data['next_observations'] - data['observations'], axis=0)
+    mean_action = np.mean(data['actions'], axis=0)
+    std_action = np.std(data['actions'], axis=0)
+    """
+    obs = np.vstack([elem['observations'] for elem in data]) # (num_paths*horizon, obs_dim)
+    deltas = np.vstack([elem['next_observations'] for elem in data]) - obs # (num_paths*horizon, obs_dim)
+    action = np.vstack([elem['actions'] for elem in data]) # (num_paths*horizon, action_dim)
+    mean_obs = np.mean(obs, axis=0)
+    std_obs = np.std(obs, axis=0)
+    mean_deltas = np.mean(deltas, axis=0)
+    std_deltas = np.std(deltas, axis=0)
+    mean_action = np.mean(action, axis=0)
+    std_action = np.std(action, axis=0)
 
+    return mean_obs, std_obs, mean_deltas, std_deltas, mean_action, std_action # (_dim, )
 
-def plot_comparison(env, dyn_model):
+def plot_comparison(env, dyn_model, num_actions):
     """
     Write a function to generate plots comparing the behavior of the model predictions for each element of the state to the actual ground truth, using randomly sampled actions. 
     """
     """ YOUR CODE HERE """
-    pass
+    obs_true = env.reset()
+    obs_pred = obs_true
+    rollout_true = []
+    rollout_pred = []
+    done = False
+    actions = np.array([env.action_space.sample() for _ in range(num_actions)])
+    for i in range(num_actions):
+        rollout_true.append(obs_true)
+        rollout_pred.append(obs_pred)
+        if (done):
+            break
+        obs_true, _, done, _ = env.step(actions[i])
+        obs_pred = np.reshape(dyn_model.predict(obs_pred, actions[i]), (-1,))
 
-def train(env, 
+    plt_per_row = 5
+    for i in range(env.obs_dim):
+        plt.subplot(np.ceil(env.obs_dim/plt_per_row).astype(int), plt_per_row, i + 1)
+        plt.plot([elem[i] for elem in rollout_true], label="ground truth")
+        plt.plot([elem[i] for elem in rollout_pred], label="predicted")
+        plt.legend()
+
+    #plt.legend(bbox_to_anchor=(1.5, 0.5), loc=6, borderaxespad=0.)
+    plt.show()
+
+def train(env,
          cost_fn,
          logdir=None,
          render=False,
@@ -112,7 +181,8 @@ def train(env,
     random_controller = RandomController(env)
 
     """ YOUR CODE HERE """
-
+    data = sample(env, random_controller, num_paths=num_paths_random, horizon=env_horizon, render=render, verbose=True) # [{path1}, {path2}, ...]
+    dataset = []
 
     #========================================================
     # 
@@ -122,7 +192,7 @@ def train(env,
     # for normalizing inputs and denormalizing outputs
     # from the dynamics network. 
     # 
-    normalization = """ YOUR CODE HERE """
+    normalization = compute_normalization(data) # (mean_obs, std_obs, ...)
 
 
     #========================================================
@@ -163,8 +233,14 @@ def train(env,
     # 
     for itr in range(onpol_iters):
         """ YOUR CODE HERE """
+        stime = time.time()
+        dataset += data
+        dyn_model.fit(dataset)
+        #plot_comparison(env, dyn_model, num_actions=10)
+        data = sample(env, mpc_controller, num_paths=num_paths_onpol, horizon=env_horizon, render=render, verbose=True) # [{path1}, {path2}, ...]
 
-
+        costs = np.array([path_cost(cost_fn, path) for path in data])
+        returns = [path['returns'][0] for path in data]
 
         # LOGGING
         # Statistics for performance of MPC policy using
@@ -182,6 +258,8 @@ def train(env,
         logz.log_tabular('MaximumReturn', np.max(returns))
 
         logz.dump_tabular()
+        etime = time.time()
+        print("at onpol_iters %d, elapsed time = %.2f" %(itr, etime - stime))
 
 def main():
 
